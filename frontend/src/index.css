@@ -1,0 +1,94 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-ink-950 text-ink-100 antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+    background-image: radial-gradient(circle at 12% -8%, rgba(59, 130, 246, 0.10), transparent 38%), radial-gradient(circle at 88% 0%, rgba(245, 158, 11, 0.08), transparent 42%), radial-gradient(circle at 50% 120%, rgba(16, 185, 129, 0.06), transparent 55%);
+    background-attachment: fixed;
+  }
+
+  ::selection {
+    @apply bg-gold-500/30 text-white;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-ink-600/60 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-ink-500;
+  }
+}
+
+@layer components {
+  .glass {
+    @apply bg-ink-900/60 backdrop-blur-xl border border-white/[0.06] rounded-2xl;
+  }
+
+  .glass-strong {
+    @apply bg-ink-850/80 backdrop-blur-2xl border border-white/[0.07] rounded-2xl;
+  }
+
+  .card-hover {
+    @apply transition-all duration-300 hover:border-white/10 hover:bg-ink-850/80;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed focus:outline-none;
+  }
+
+  .btn-primary {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-semibold transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed bg-gold-500 hover:bg-gold-400 text-ink-950 shadow-glow-gold;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed bg-ink-700/60 hover:bg-ink-600 text-ink-100 border border-white/[0.06];
+  }
+
+  .btn-danger {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all duration-200 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed bg-rose-600/90 hover:bg-rose-500 text-white border border-rose-400/20 shadow-glow-rose;
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border;
+  }
+
+  .input-field {
+    @apply w-full bg-ink-800/70 border border-white/[0.07] rounded-xl px-3.5 py-2.5 text-sm text-ink-100 placeholder:text-ink-400 transition-all focus:outline-none focus:ring-2 focus:ring-gold-500/40 focus:border-gold-500/40;
+  }
+
+  .stat-card {
+    @apply glass p-4 flex flex-col gap-1.5 relative overflow-hidden;
+  }
+
+  .skeleton {
+    @apply bg-gradient-to-r from-ink-700/40 via-ink-600/60 to-ink-700/40 animate-shimmer rounded-md;
+    background-size: 200% 100%;
+  }
+}
+
+.bg-grid {
+  background-image: linear-gradient(rgba(255, 255, 255, 0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255, 255, 255, 0.025) 1px, transparent 1px);
+  background-size: 32px 32px;
+}

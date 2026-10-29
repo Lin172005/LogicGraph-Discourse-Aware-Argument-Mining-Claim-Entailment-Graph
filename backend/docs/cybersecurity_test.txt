@@ -1,0 +1,1 @@
+Organizations should require multi-factor authentication for sensitive accounts. Security research shows that an additional authentication factor can prevent many account takeover attacks. Regular software updates reduce exposure to known vulnerabilities. However, security controls must be designed carefully so that employees can still access essential systems during emergencies.

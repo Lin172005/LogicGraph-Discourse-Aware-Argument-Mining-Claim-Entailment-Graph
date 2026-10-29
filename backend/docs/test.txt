@@ -1,0 +1,1 @@
+"AI systems should be transparent. Studies show that transparent AI improves user trust. However, some proprietary algorithms hide their logic."
