@@ -85,7 +85,7 @@ class NLIProcessor:
                 evidence,
                 candidate_labels=self.LABELS,
                 hypothesis_template=hypothesis,
-                multi_class=False
+                multi_label=False
             )
             
             top_label = result["labels"][0]
@@ -171,7 +171,7 @@ class NLIProcessor:
                         batch,
                         candidate_labels=self.LABELS,
                         hypothesis_template=hypothesis,
-                        multi_class=False,
+                        multi_label=False,
                         batch_size=batch_size,
                     )
                     outputs = (
