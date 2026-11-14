@@ -28,7 +28,7 @@ class GraphService:
 
     def __init__(self) -> None:
         uri = os.getenv("NEO4J_URI", "bolt://neo4j:7687")
-        user = os.getenv("NEO4J_USER", "neo4j")
+        user = os.getenv("NEO4J_USER") or os.getenv("NEO4J_USERNAME") or "neo4j"
         password = os.getenv("NEO4J_PASSWORD", "password123")
         self.driver = GraphDatabase.driver(uri, auth=(user, password))
 

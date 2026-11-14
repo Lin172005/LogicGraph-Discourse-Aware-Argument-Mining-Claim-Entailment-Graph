@@ -167,6 +167,7 @@ class NLIProcessor:
             for batch_start in range(0, len(premises), batch_size):
                 batch = premises[batch_start:batch_start + batch_size]
                 try:
+                    logger.info("Classifying batch %s-%s for claim: %s", batch_start, batch_start + len(batch), claim[:30])
                     batch_output = classifier(
                         batch,
                         candidate_labels=self.LABELS,
