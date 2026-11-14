@@ -4,7 +4,7 @@ Batch processes premise-claim pairs to predict support/contradiction relations.
 """
 
 import logging
-from typing import List, Tuple, Dict, Optional
+from typing import Any, List, Tuple, Dict, Optional
 from transformers import pipeline, AutoTokenizer
 
 logger = logging.getLogger(__name__)
@@ -21,14 +21,18 @@ class NLIProcessor:
     LABELS = ["supports", "contradicts", "is unrelated to"]
     HYPOTHESIS_TEMPLATE = 'This evidence {{}} the claim: "{}"'
     
-    def __init__(self, use_gpu: bool = False):
+    def __init__(self, use_gpu: Optional[bool] = None):
         """
         Initialize NLI processor with lazy loading.
         
         Args:
-            use_gpu: Whether to use GPU (if available)
+            use_gpu: Whether to use GPU. Defaults to torch.cuda.is_available().
         """
-        self.use_gpu = use_gpu
+        import torch
+        if use_gpu is None:
+            self.use_gpu = torch.cuda.is_available()
+        else:
+            self.use_gpu = use_gpu
         self._pipeline = None
         self._tokenizer = None
     
@@ -58,7 +62,7 @@ class NLIProcessor:
         self,
         claim: str,
         evidence: str
-    ) -> Dict[str, any]:
+    ) -> Dict[str, Any]:
         """
         Classify relationship between a single premise-claim pair.
         
@@ -111,7 +115,7 @@ class NLIProcessor:
     def classify_batch(
         self,
         pairs: List[Tuple[str, str]],
-        batch_size: int = 8,
+        batch_size: int = 16,
         confidence_threshold: Optional[float] = None
     ) -> List[Tuple[str, str, Dict]]:
         """
@@ -135,38 +139,78 @@ class NLIProcessor:
         logger.info(f"Starting batch classification of {len(pairs)} pairs")
         
         results = []
-        
-        # Process in batches
-        for batch_start in range(0, len(pairs), batch_size):
-            batch_end = min(batch_start + batch_size, len(pairs))
-            batch = pairs[batch_start:batch_end]
-            
-            for idx, (premise, claim) in enumerate(batch):
+        valid_pairs = []
+        for index, (premise, claim) in enumerate(pairs):
+            if not premise or not claim:
+                logger.warning("Skipping pair %s: empty premise or claim", index)
+                continue
+            if len(premise) > 512 or len(claim) > 512:
+                logger.warning(
+                    "Skipping pair %s: premise (%s chars) or claim (%s chars) too long",
+                    index,
+                    len(premise),
+                    len(claim),
+                )
+                continue
+            valid_pairs.append((premise, claim))
+
+        # Grouping by claim allows the zero-shot pipeline to classify many
+        # premises in one model call while preserving the per-pair API result.
+        pairs_by_claim: Dict[str, List[str]] = {}
+        for premise, claim in valid_pairs:
+            pairs_by_claim.setdefault(claim, []).append(premise)
+
+        classifier = self._get_pipeline()
+        processed = 0
+        for claim, premises in pairs_by_claim.items():
+            hypothesis = self.HYPOTHESIS_TEMPLATE.format(claim)
+            for batch_start in range(0, len(premises), batch_size):
+                batch = premises[batch_start:batch_start + batch_size]
                 try:
-                    # Validate inputs
-                    if not premise or not claim:
-                        logger.warning(
-                            f"Skipping pair {batch_start + idx}: empty premise or claim"
+                    batch_output = classifier(
+                        batch,
+                        candidate_labels=self.LABELS,
+                        hypothesis_template=hypothesis,
+                        multi_class=False,
+                        batch_size=batch_size,
+                    )
+                    outputs = (
+                        batch_output if isinstance(batch_output, list)
+                        else [batch_output]
+                    )
+                    for premise, output in zip(batch, outputs):
+                        top_label = output["labels"][0]
+                        top_score = round(float(output["scores"][0]), 4)
+                        relation = (
+                            "SUPPORTS" if top_label == "supports"
+                            else "CONTRADICTS" if top_label == "contradicts"
+                            else "NEUTRAL"
                         )
-                        continue
-                    
-                    if len(premise) > 512 or len(claim) > 512:
-                        logger.warning(
-                            f"Skipping pair {batch_start + idx}: "
-                            f"premise ({len(premise)} chars) or claim ({len(claim)} chars) too long"
-                        )
-                        continue
-                    
-                    # Classify
-                    classification = self.classify_single_pair(claim, premise)
-                    results.append((premise, claim, classification))
-                    
-                    if (batch_start + idx + 1) % 10 == 0:
-                        logger.info(f"Processed {batch_start + idx + 1}/{len(pairs)} pairs")
-                
-                except Exception as e:
+                        classification = {
+                            "relation": relation,
+                            "confidence": top_score,
+                            "raw_scores": {
+                                label: round(float(score), 4)
+                                for label, score in zip(
+                                    output["labels"], output["scores"]
+                                )
+                            },
+                        }
+                        if (
+                            confidence_threshold is None
+                            or top_score >= confidence_threshold
+                        ):
+                            results.append((premise, claim, classification))
+
+                    processed += len(batch)
+                    logger.info(
+                        "Processed %s/%s premise-claim pairs",
+                        processed,
+                        len(valid_pairs),
+                    )
+                except Exception as exc:
                     logger.warning(
-                        f"Error classifying pair {batch_start + idx}: {e}"
+                        "Error classifying batch for claim %r: %s", claim, exc
                     )
                     continue
         

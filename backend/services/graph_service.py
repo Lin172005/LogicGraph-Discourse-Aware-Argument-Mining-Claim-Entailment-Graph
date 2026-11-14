@@ -38,6 +38,9 @@ class GraphService:
             "CREATE CONSTRAINT IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (c:Claim) REQUIRE c.text IS UNIQUE",
             "CREATE CONSTRAINT IF NOT EXISTS FOR (p:Premise) REQUIRE p.text IS UNIQUE",
+            "CREATE INDEX IF NOT EXISTS FOR ()-[r:SUPPORTS]-() ON (r.doc_id)",
+            "CREATE INDEX IF NOT EXISTS FOR ()-[r:CONTRADICTS]-() ON (r.doc_id)",
+            "CREATE INDEX IF NOT EXISTS FOR ()-[r:NEUTRAL]-() ON (r.doc_id)",
         ]
         with self.driver.session() as session:
             for statement in statements:
@@ -84,8 +87,38 @@ class GraphService:
         confidence_threshold: float,
     ) -> int:
         """Create a document and persist its accepted argument relations."""
-        stored_relations = 0
+        # Pre-filter and clean items for batch insertion
+        support_items = []
+        contradict_items = []
+        neutral_items = []
+
+        for premise, claim, nli_result in nli_results:
+            relation = nli_result.get("relation")
+            confidence = float(nli_result.get("confidence", 0.0))
+
+            if confidence < confidence_threshold or relation == "NEUTRAL":
+                continue
+
+            premise_clean, claim_clean = clean_text(premise), clean_text(claim)
+            if not premise_clean or not claim_clean:
+                continue
+
+            item = {
+                "claim": claim_clean,
+                "evidence": premise_clean,
+                "confidence": confidence,
+            }
+            if relation == "SUPPORTS":
+                support_items.append(item)
+            elif relation == "CONTRADICTS":
+                contradict_items.append(item)
+            elif relation == "NEUTRAL":
+                neutral_items.append(item)
+
+        stored_relations = len(support_items) + len(contradict_items) + len(neutral_items)
+
         with self.driver.session() as session:
+            # 1. Store document node
             session.run(
                 """
                 MERGE (d:Document {id: $doc_id})
@@ -97,42 +130,30 @@ class GraphService:
                 filename=filename,
             )
 
-            for index, (premise, claim, nli_result) in enumerate(nli_results):
-                relation = nli_result["relation"]
-                confidence = nli_result["confidence"]
-
-                if confidence < confidence_threshold or relation == "NEUTRAL":
+            # 2. Batch store by relation type using UNWIND
+            for rel_type, items in [
+                ("SUPPORTS", support_items),
+                ("CONTRADICTS", contradict_items),
+                ("NEUTRAL", neutral_items),
+            ]:
+                if not items:
                     continue
-
-                premise, claim = clean_text(premise), clean_text(claim)
-                if not premise or not claim:
-                    continue
-
-                try:
-                    relation = self._validate_relation(relation)
-                    query = f"""
-                    MERGE (d:Document {{id: $doc_id}})
-                    MERGE (c:Claim {{text: $claim_text}})
-                    MERGE (p:Premise {{text: $evidence_text}})
-                    MERGE (d)-[:CONTAINS]->(c)
-                    MERGE (d)-[:CONTAINS]->(p)
-                    MERGE (p)-[r:{relation}]->(c)
-                    ON CREATE SET
-                        r.confidence = $confidence,
-                        r.doc_id = $doc_id,
-                        r.created_at = timestamp()
-                    ON MATCH SET r.confidence = $confidence
-                    """
-                    session.run(
-                        query,
-                        doc_id=document_id,
-                        claim_text=claim,
-                        evidence_text=premise,
-                        confidence=confidence,
-                    )
-                    stored_relations += 1
-                except Exception as exc:
-                    logger.warning("Failed to store relation %s: %s", index, exc)
+                batch_query = f"""
+                MERGE (d:Document {{id: $doc_id}})
+                WITH d
+                UNWIND $batch AS item
+                MERGE (c:Claim {{text: item.claim}})
+                MERGE (p:Premise {{text: item.evidence}})
+                MERGE (d)-[:CONTAINS]->(c)
+                MERGE (d)-[:CONTAINS]->(p)
+                MERGE (p)-[r:{rel_type}]->(c)
+                ON CREATE SET
+                    r.confidence = item.confidence,
+                    r.doc_id = $doc_id,
+                    r.created_at = timestamp()
+                ON MATCH SET r.confidence = item.confidence
+                """
+                session.run(batch_query, doc_id=document_id, batch=items)
 
         return stored_relations
 
@@ -248,6 +269,10 @@ class GraphService:
         RETURN elementId(r) AS id,
                elementId(source) AS source,
                elementId(target) AS target,
+               coalesce(source.text, source.title, source.id) AS source_text,
+               coalesce(target.text, target.title, target.id) AS target_text,
+               labels(source)[0] AS source_type,
+               labels(target)[0] AS target_type,
                type(r) AS relation,
                r.confidence AS confidence
         """
@@ -255,6 +280,28 @@ class GraphService:
             nodes = [record.data() for record in session.run(nodes_query)]
             edges = [record.data() for record in session.run(edges_query)]
         return {"nodes": nodes, "edges": edges}
+
+    def get_academic_argument_synthesis(self) -> Dict[str, Any]:
+        """
+        Academic analysis:
+        Group arguments by Claims, attach supporting/refuting premises with confidence,
+        compute Toulmin argument structure metrics, and identify contested literature points.
+        """
+        claims_query = """
+        MATCH (c:Claim)
+        OPTIONAL MATCH (p_sup:Premise)-[s:SUPPORTS]->(c)
+        OPTIONAL MATCH (p_con:Premise)-[k:CONTRADICTS]->(c)
+        RETURN c.text AS claim_text,
+               collect(DISTINCT { premise: p_sup.text, confidence: s.confidence }) AS supporting_evidence,
+               collect(DISTINCT { premise: p_con.text, confidence: k.confidence }) AS refuting_evidence,
+               count(DISTINCT s) AS support_count,
+               count(DISTINCT k) AS refute_count
+        ORDER BY (support_count + refute_count) DESC
+        LIMIT 25
+        """
+        with self.driver.session() as session:
+            records = [r.data() for r in session.run(claims_query)]
+        return {"analyzed_claims": records}
 
     def clear_graph(self) -> Dict[str, int]:
         """Delete every node and relationship from the graph."""
@@ -327,6 +374,73 @@ class GraphService:
         with self.driver.session() as session:
             result = session.run(query, topic=topic)
             return [record["result"] for record in result]
+
+    def get_bias_and_fallacy_metrics(self) -> Dict[str, Any]:
+        """
+        Compute Debate Polarization Index and detect circular/contradictory clusters.
+        - Polarization Index = 1 - |supports - contradicts| / (supports + contradicts)
+          Ranges from 0 (completely one-sided/echo chamber) to 1 (intense balanced debate).
+        - Direct Contradictions: Claims that have both strong SUPPORTS and CONTRADICTS.
+        - Circular clusters: Premise/Claim cycles.
+        """
+        query = """
+        MATCH ()-[s:SUPPORTS]->()
+        WITH count(s) AS total_supports
+        MATCH ()-[c:CONTRADICTS]->()
+        WITH total_supports, count(c) AS total_contradicts
+        RETURN total_supports, total_contradicts
+        """
+        contested_claims_query = """
+        MATCH (p1:Premise)-[s:SUPPORTS]->(c:Claim)
+        MATCH (p2:Premise)-[k:CONTRADICTS]->(c)
+        RETURN c.text AS contested_claim,
+               count(DISTINCT s) AS supporting_count,
+               count(DISTINCT k) AS contradicting_count,
+               round(avg(s.confidence), 3) AS avg_support_conf,
+               round(avg(k.confidence), 3) AS avg_contradict_conf
+        ORDER BY (supporting_count + contradicting_count) DESC
+        LIMIT 10
+        """
+        circular_query = """
+        MATCH (n:Claim)-[r1:SUPPORTS|CONTRADICTS]->(m:Claim)-[r2:SUPPORTS|CONTRADICTS]->(n)
+        WHERE id(n) < id(m)
+        RETURN n.text AS node_a, m.text AS node_b, type(r1) AS rel_a_to_b, type(r2) AS rel_b_to_a
+        LIMIT 5
+        """
+        with self.driver.session() as session:
+            counts = session.run(query).single()
+            contested_records = [r.data() for r in session.run(contested_claims_query)]
+            circular_records = [r.data() for r in session.run(circular_query)]
+
+        total_sup = counts["total_supports"] if counts else 0
+        total_con = counts["total_contradicts"] if counts else 0
+        total_rel = total_sup + total_con
+
+        if total_rel > 0:
+            imbalance = abs(total_sup - total_con) / total_rel
+            polarization_index = round(1.0 - imbalance, 3)
+        else:
+            polarization_index = 0.0
+
+        if polarization_index >= 0.7:
+            status = "BALANCED_DEBATE"
+            summary = "High polarization and balanced active debate between thesis and antithesis."
+        elif polarization_index >= 0.35:
+            status = "MODERATE_DIVERGENCE"
+            summary = "Moderate debate with a dominant leaning towards one side."
+        else:
+            status = "ECHO_CHAMBER"
+            summary = "Strong consensus or one-sided bias with minimal dissenting evidence."
+
+        return {
+            "polarization_index": polarization_index,
+            "status": status,
+            "summary": summary,
+            "total_supports": total_sup,
+            "total_contradicts": total_con,
+            "contested_claims": contested_records,
+            "circular_dependencies": circular_records,
+        }
 
     def close(self) -> None:
         """Close the Neo4j driver."""

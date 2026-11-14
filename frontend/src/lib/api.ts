@@ -67,6 +67,33 @@ async function mockRoute<T>(path: string, method: string, body: unknown): Promis
   if (path.startsWith('/api/document/') && method === 'DELETE') {
     return delay({ message: 'Document deleted' } as T);
   }
+  if (path === '/api/graph/fallacy-bias' && method === 'GET') {
+    return delay({
+      polarization_index: 0.78,
+      status: 'BALANCED_DEBATE',
+      summary: 'High polarization with active debate between thesis and antithesis arguments across security and usability.',
+      total_supports: 18,
+      total_contradicts: 13,
+      contested_claims: [
+        {
+          contested_claim: 'Organizations should mandate hardware security keys for all staff.',
+          supporting_count: 5,
+          contradicting_count: 3,
+          avg_support_conf: 0.88,
+          avg_contradict_conf: 0.81,
+        },
+      ],
+      circular_dependencies: [],
+    } as T);
+  }
+  if (path.startsWith('/api/graph/export') && method === 'GET') {
+    return delay({
+      '@context': 'https://schema.org',
+      '@type': 'GraphAnalysisReport',
+      nodes: mockGraph.nodes,
+      edges: mockGraph.links,
+    } as T);
+  }
   if (path === '/api/graph/clear' && method === 'DELETE') {
     return delay({ message: 'Graph cleared' } as T);
   }

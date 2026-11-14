@@ -143,3 +143,24 @@ export interface SynthesisResponse {
   summary?: string;
   [k: string]: unknown;
 }
+
+export interface FallacyBiasMetrics {
+  polarization_index: number;
+  status: 'BALANCED_DEBATE' | 'MODERATE_DIVERGENCE' | 'ECHO_CHAMBER' | string;
+  summary: string;
+  total_supports: number;
+  total_contradicts: number;
+  contested_claims: Array<{
+    contested_claim: string;
+    supporting_count: number;
+    contradicting_count: number;
+    avg_support_conf: number;
+    avg_contradict_conf: number;
+  }>;
+  circular_dependencies: Array<{
+    node_a: string;
+    node_b: string;
+    rel_a_to_b: string;
+    rel_b_to_a: string;
+  }>;
+}

@@ -85,7 +85,8 @@ class DiscourseParser:
     def identify_claims_and_premises(
         self, 
         sentences: List[str],
-        top_n_claims: int = 3
+        top_n_claims: int = 5,
+        max_premises: int = 35
     ) -> Tuple[List[str], List[str]]:
         """
         Identify primary claims (thesis statements) and premises (supporting evidence).
@@ -93,11 +94,13 @@ class DiscourseParser:
         Strategy:
         1. Score sentences based on claim indicators and position
         2. Top-N high-scoring sentences become claims
-        3. Remaining sentences are premises
+        3. Remaining sentences are ranked premises, bounded by max_premises
+           to prevent combinatorial explosion in NLI processing
         
         Args:
             sentences: List of segmented sentences
-            top_n_claims: Number of top sentences to designate as claims
+            top_n_claims: Maximum number of top sentences to designate as claims
+            max_premises: Maximum premises to retain for NLI pairing
             
         Returns:
             Tuple of (claims, premises)
@@ -118,9 +121,21 @@ class DiscourseParser:
         claim_count = min(top_n_claims, max(1, len(sentences) - 1))
         claims = [sent for sent, score in scored_sentences[:claim_count]]
         
-        # Remaining sentences are premises
+        # Remaining sentences are potential premises
         claim_texts_set = set(claims)
-        premises = [sent for sent in sentences if sent not in claim_texts_set]
+        remaining_candidates = [
+            (sent, score) for sent, score in scored_sentences if sent not in claim_texts_set
+        ]
+        
+        # Keep premises in natural document order, capped at max_premises
+        if len(remaining_candidates) > max_premises:
+            # Keep the most argumentative sentences plus document context
+            remaining_candidates.sort(key=lambda x: x[1])  # lowest claim score = strongest premise
+            selected_premise_set = set(sent for sent, _ in remaining_candidates[:max_premises])
+            premises = [sent for sent in sentences if sent in selected_premise_set]
+        else:
+            premises = [sent for sent in sentences if sent in claim_texts_set]
+            premises = [sent for sent in sentences if sent not in claim_texts_set]
         
         logger.info(f"Identified {len(claims)} claims and {len(premises)} premises")
         

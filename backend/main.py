@@ -26,7 +26,11 @@ from services.nli_processor import NLIProcessor
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-load_dotenv(Path(__file__).resolve().parent.parent.parent / ".env")
+# Search for .env in project root or current directory
+env_path = Path(__file__).resolve().parent.parent / ".env"
+if not env_path.exists():
+    env_path = Path(__file__).resolve().parent / ".env"
+load_dotenv(env_path)
 
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
 MAX_EVIDENCE_ITEMS = 200
@@ -528,6 +532,179 @@ def query_graph_rag(request: QueryRequest):
     except Exception as e:
         logger.error(f"Error querying graph: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/graph/fallacy-bias", tags=["Retrieval"])
+def get_bias_and_fallacy_metrics():
+    """
+    Feature 3: Return Debate Polarization Index, bias indicators,
+    and highly contested argument clusters.
+    """
+    try:
+        return graph_service.get_bias_and_fallacy_metrics()
+    except Exception as exc:
+        logger.error("Error computing bias and fallacy metrics: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/api/graph/export", tags=["Retrieval"])
+async def export_graph_data(format: str = "json"):
+    """
+    Feature 4: Academic-Grade Evidence Brief & Knowledge Graph Export.
+    Produces peer-reviewable literature synthesis, claim-premise matrices,
+    contested argument tension reports, and JSON-LD ontologies.
+    """
+    try:
+        vis_data = graph_service.get_visualization()
+        stats = graph_service.get_graph_stats()
+        bias_metrics = graph_service.get_bias_and_fallacy_metrics()
+        academic_data = graph_service.get_academic_argument_synthesis()
+        
+        if format.lower() == "markdown":
+            avg_conf = stats.get('average_confidence')
+            avg_conf_str = f"{float(avg_conf):.2%}" if avg_conf is not None else "N/A"
+            polarization_score = bias_metrics.get("polarization_index", 0.0)
+            status_desc = bias_metrics.get("status", "N/A")
+            total_sup = bias_metrics.get("total_supports", 0)
+            total_con = bias_metrics.get("total_contradicts", 0)
+            analyzed_claims = academic_data.get("analyzed_claims", [])
+
+            # Generate High-Level Academic Executive Summary with Gemini LLM if configured
+            executive_summary = ""
+            client = getattr(app.state, "gemini_client", None)
+            if client and analyzed_claims:
+                try:
+                    summary_context = {
+                        "total_documents": stats.get('total_documents') or 0,
+                        "polarization_status": status_desc,
+                        "polarization_score": polarization_score,
+                        "claims_sample": [
+                            {
+                                "claim": c.get("claim_text"),
+                                "supports": [p.get("premise") for p in c.get("supporting_evidence", [])[:2] if p.get("premise")],
+                                "refutes": [p.get("premise") for p in c.get("refuting_evidence", [])[:2] if p.get("premise")]
+                            }
+                            for c in analyzed_claims[:6]
+                        ]
+                    }
+                    llm_prompt = (
+                        "You are an academic literature synthesis analyst. Based on this extracted argument graph summary, "
+                        "write a rigorous 2-3 paragraph academic executive summary synthesizing the dominant consensus, "
+                        "major points of debate/tension, and methodological takeaways. Do not invent facts beyond the provided context.\n\n"
+                        f"Context: {json.dumps(summary_context)}"
+                    )
+                    resp = await client.aio.models.generate_content(
+                        model=GEMINI_MODEL,
+                        contents=llm_prompt,
+                    )
+                    if resp.text:
+                        executive_summary = resp.text.strip()
+                except Exception as exc:
+                    logger.warning("Gemini LLM executive summary generation skipped: %s", exc)
+
+            if not executive_summary:
+                executive_summary = (
+                    f"This report synthesizes evidence extracted across **{stats.get('total_documents') or 0} documents**, "
+                    f"evaluating **{len(analyzed_claims)} key claims** supported by **{total_sup} confirmations** "
+                    f"and challenged by **{total_con} refutations** (mean entailment confidence: **{avg_conf_str}**). "
+                    f"The overall discourse exhibits a polarization index of **{polarization_score:.1%}**, indicating a "
+                    f"**{status_desc.replace('_', ' ').title()}** state where evidence converges on core principles while "
+                    f"sustaining active methodological and operational debates."
+                )
+            
+            md_lines = [
+                "# Academic Discourse & Argumentation Synthesis Report",
+                "> Generated by LogicGraph Discourse-Aware Argument Mining & Claim Entailment Engine\n",
+                "## Executive Summary",
+                executive_summary,
+                "\n---\n",
+                "## 1. Corpus Summary & Argument Density",
+                "| Metric | Value | Description |",
+                "| :--- | :--- | :--- |",
+                f"| **Corpus Documents** | {stats.get('total_documents') or 0} | Ingested source files |",
+                f"| **Identified Claims** | {stats.get('total_claims') or 0} | Primary thesis assertions |",
+                f"| **Extracted Premises** | {stats.get('total_premises') or 0} | Grounded evidence statements |",
+                f"| **Argument Relations** | {stats.get('total_relations') or 0} | Entailment links (Supports / Contradicts) |",
+                f"| **Mean NLI Confidence** | {avg_conf_str} | DeBERTa inference confidence score |",
+                f"| **Debate Polarization** | {polarization_score:.1%} ({status_desc}) | Thesis vs. Antithesis equilibrium |",
+                "\n---\n",
+                "## 2. Dialectic Argument Structures (Claims & Grounded Evidence)",
+            ]
+            
+            analyzed_claims = academic_data.get("analyzed_claims", [])
+            if analyzed_claims:
+                for idx, claim_obj in enumerate(analyzed_claims, 1):
+                    claim_text = (claim_obj.get("claim_text") or "").strip()
+                    if not claim_text:
+                        continue
+                    
+                    sup_list = [p for p in claim_obj.get("supporting_evidence", []) if p.get("premise")]
+                    con_list = [p for p in claim_obj.get("refuting_evidence", []) if p.get("premise")]
+                    
+                    md_lines.append(f"### Claim {idx}: \"{claim_text}\"")
+                    md_lines.append(f"**Evidence Ratio:** {len(sup_list)} Supporting vs {len(con_list)} Refuting\n")
+                    
+                    if sup_list:
+                        md_lines.append("#### Supporting Premises (Thesis)")
+                        for item in sup_list:
+                            prem = item.get("premise", "").strip()
+                            c_val = item.get("confidence")
+                            c_str = f" [Confidence: {float(c_val):.2f}]" if c_val is not None else ""
+                            md_lines.append(f"- **[SUPPORTS]{c_str}** {prem}")
+                    else:
+                        md_lines.append("#### Supporting Premises (Thesis)\n*No direct supporting evidence identified in corpus.*")
+                        
+                    md_lines.append("")
+                    if con_list:
+                        md_lines.append("#### Counter-Arguments & Refutations (Antithesis)")
+                        for item in con_list:
+                            prem = item.get("premise", "").strip()
+                            c_val = item.get("confidence")
+                            c_str = f" [Confidence: {float(c_val):.2f}]" if c_val is not None else ""
+                            md_lines.append(f"- **[CONTRADICTS]{c_str}** {prem}")
+                    else:
+                        md_lines.append("#### Counter-Arguments & Refutations (Antithesis)\n*No direct refutations identified in corpus (Consensus).*")
+                    
+                    md_lines.append("\n---\n")
+            else:
+                md_lines.append("*No claims have been extracted yet. Please ingest research documents to populate analysis.*")
+                
+            md_lines.append("## 3. Epistemic Contradiction & Debate Tension Points")
+            contested = bias_metrics.get("contested_claims", [])
+            if contested:
+                md_lines.append("| Contested Claim | Supporting Items | Contradicting Items | Support Conf | Contradict Conf |")
+                md_lines.append("| :--- | :---: | :---: | :---: | :---: |")
+                for c in contested:
+                    c_claim = c.get("contested_claim", "").replace("|", "\\|")
+                    s_cnt = c.get("supporting_count", 0)
+                    k_cnt = c.get("contradicting_count", 0)
+                    s_conf = f"{c.get('avg_support_conf', 0):.2f}"
+                    k_conf = f"{c.get('avg_contradict_conf', 0):.2f}"
+                    md_lines.append(f"| {c_claim} | {s_cnt} | {k_cnt} | {s_conf} | {k_conf} |")
+            else:
+                md_lines.append("*No cross-document tensions or direct refutations found.*")
+                
+            md_lines.append("\n\n*Report compiled via LogicGraph Argument Mining System.*")
+            
+            return JSONResponse(
+                content={"markdown": "\n".join(md_lines), "filename": "academic_argument_synthesis.md"},
+                headers={"Content-Disposition": "attachment; filename=academic_argument_synthesis.md"}
+            )
+            
+        # Default JSON-LD / Structured Export
+        json_ld = {
+            "@context": "https://schema.org",
+            "@type": "AcademicArgumentationReport",
+            "statistics": stats,
+            "polarization_analysis": bias_metrics,
+            "argument_matrix": academic_data.get("analyzed_claims", []),
+            "nodes": vis_data.get("nodes", []),
+            "edges": vis_data.get("edges", []),
+        }
+        return json_ld
+    except Exception as exc:
+        logger.error("Error exporting graph data: %s", exc)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
 @app.delete("/api/graph/clear", tags=["Admin Reset"])

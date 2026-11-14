@@ -51,6 +51,8 @@ export function GraphExplorerView({ pushToast }: { pushToast: ToastPush }) {
   const [statsLoading, setStatsLoading] = useState(true);
   const [graph, setGraph] = useState<GraphData | null>(null);
   const [graphLoading, setGraphLoading] = useState(true);
+  const [fallacyMetrics, setFallacyMetrics] = useState<import('@/lib/types').FallacyBiasMetrics | null>(null);
+  const [exporting, setExporting] = useState(false);
   const [selected, setSelected] = useState<GraphNode | null>(null);
   const [neighbors, setNeighbors] = useState<{ links: GraphLink[]; nodes: GraphNode[] }>({ links: [], nodes: [] });
   const cyRef = useRef<Core | null>(null);
@@ -78,6 +80,12 @@ export function GraphExplorerView({ pushToast }: { pushToast: ToastPush }) {
       setGraph(null);
     } finally {
       setGraphLoading(false);
+    }
+    try {
+      const fb = await apiGet<import('@/lib/types').FallacyBiasMetrics>('/api/graph/fallacy-bias');
+      setFallacyMetrics(fb);
+    } catch {
+      setFallacyMetrics(null);
     }
   };
 
@@ -358,6 +366,48 @@ export function GraphExplorerView({ pushToast }: { pushToast: ToastPush }) {
     setNeighbors({ links: [], nodes: [] });
   };
 
+  const downloadExport = async (format: 'markdown' | 'json') => {
+    setExporting(true);
+    try {
+      const url = `${import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000'}/api/graph/export?format=${format}`;
+      const res = await fetch(url);
+      if (!res.ok) {
+        throw new Error(`Export server error (${res.status})`);
+      }
+      const data = await res.json();
+      
+      if (format === 'markdown') {
+        const mdText = data.markdown || '';
+        const blob = new Blob([mdText], { type: 'text/markdown;charset=utf-8' });
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = data.filename || 'academic_argument_synthesis.md';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(blobUrl);
+        pushToast('Markdown synthesis exported successfully!', 'success');
+      } else {
+        const jsonText = JSON.stringify(data, null, 2);
+        const blob = new Blob([jsonText], { type: 'application/json' });
+        const blobUrl = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = blobUrl;
+        a.download = 'argument_graph_knowledge.json';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(blobUrl);
+        pushToast('JSON-LD graph exported successfully!', 'success');
+      }
+    } catch (e) {
+      pushToast(`Export failed: ${e instanceof Error ? e.message : 'unknown'}`, 'error');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   const totalNodes = graph?.nodes?.length ?? 0;
   const totalEdges = (graph?.links ?? graph?.edges ?? []).length;
 
@@ -368,10 +418,29 @@ export function GraphExplorerView({ pushToast }: { pushToast: ToastPush }) {
           <h1 className="text-2xl font-bold tracking-tight text-white">Graph Explorer</h1>
           <p className="text-sm text-ink-400 mt-1">Interactive argument map — claims, premises, and dialectic relations.</p>
         </div>
-        <button onClick={loadAll} className="btn-ghost" disabled={statsLoading || graphLoading}>
-          <RefreshCw className={cn('w-4 h-4', (statsLoading || graphLoading) && 'animate-spin')} />
-          Refresh
-        </button>
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => downloadExport('markdown')}
+            className="btn-ghost text-xs flex items-center gap-1.5"
+            disabled={exporting}
+            title="Export as Academic Markdown Report"
+          >
+            {exporting && <RefreshCw className="w-3 h-3 animate-spin" />}
+            {exporting ? 'Generating...' : 'Export Markdown'}
+          </button>
+          <button
+            onClick={() => downloadExport('json')}
+            className="btn-ghost text-xs flex items-center gap-1.5"
+            disabled={exporting}
+            title="Export as JSON-LD"
+          >
+            Export JSON
+          </button>
+          <button onClick={loadAll} className="btn-ghost" disabled={statsLoading || graphLoading}>
+            <RefreshCw className={cn('w-4 h-4', (statsLoading || graphLoading) && 'animate-spin')} />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {/* Stats */}
@@ -480,6 +549,29 @@ export function GraphExplorerView({ pushToast }: { pushToast: ToastPush }) {
                   <span className="w-4 h-0.5 bg-rose-400 border-t-2 border-dashed border-rose-400" /> Contradicts
                 </div>
               </div>
+
+              {/* Debate Polarization & Fallacy Heatmap Card */}
+              {fallacyMetrics && (
+                <div className="mt-6 pt-5 border-t border-white/[0.08]">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs uppercase font-semibold text-ink-400 tracking-wider">Debate Polarization</span>
+                    <Badge variant={fallacyMetrics.polarization_index > 0.6 ? 'ok' : 'gold'}>
+                      {fallacyMetrics.status}
+                    </Badge>
+                  </div>
+                  <div className="text-2xl font-bold text-white tabular-nums">
+                    {(fallacyMetrics.polarization_index * 100).toFixed(0)}%
+                  </div>
+                  <p className="text-xs text-ink-400 mt-1 leading-relaxed">
+                    {fallacyMetrics.summary}
+                  </p>
+                  <div className="mt-3 flex items-center gap-2 text-xs">
+                    <span className="text-emerald-400 font-medium">+{fallacyMetrics.total_supports} supports</span>
+                    <span className="text-ink-500">·</span>
+                    <span className="text-rose-400 font-medium">-{fallacyMetrics.total_contradicts} contradicts</span>
+                  </div>
+                </div>
+              )}
             </Card>
           )}
         </div>
